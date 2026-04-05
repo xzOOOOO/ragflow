@@ -32,6 +32,10 @@ class MilvusManager:
         schema.add_field("dense_vector", DataType.FLOAT_VECTOR, dim=dense_dim)
         schema.add_field("sparse_vector", DataType.SPARSE_FLOAT_VECTOR)
         schema.add_field("content", DataType.VARCHAR, max_length=65535)
+        #父文档相关
+        schema.add_field("parent_id", DataType.VARCHAR, max_length=100)
+        schema.add_field("child_index", DataType.INT64)
+        schema.add_field("parent_content", DataType.VARCHAR, max_length=65535)
         
         index_params = client.prepare_index_params()
         index_params.add_index("dense_vector", metric_type="COSINE", index_type="IVF_FLAT")
@@ -42,6 +46,9 @@ class MilvusManager:
             schema=schema,
             index_params=index_params,
         )
+
+        # 加载集合到内存
+        client.load_collection(self.collection_name)
     
     def insert(self, data: List[Dict]):
         """
@@ -49,7 +56,9 @@ class MilvusManager:
         data: [{"id": "xxx", "dense_vector": [...], "sparse_vector": {...}, "content": "xxx"}, ...]
         """
         client = self._get_client()
-        client.insert(self.collection_name, data)
+        
+        result = client.insert(self.collection_name, data)
+        return result
     
     def hybrid_retrieve(
         self,
@@ -59,6 +68,7 @@ class MilvusManager:
     ) -> List[Dict]:
         """
         混合检索（密集 + 稀疏 → RRF融合）
+        返回去重后的父文档
         """
         client = self._get_client()
         
@@ -81,11 +91,51 @@ class MilvusManager:
             reqs=[dense_req, sparse_req],
             ranker=RRFRanker(k=60),
             limit=top_k,
-            output_fields=["content"],
+            output_fields=["content", "parent_id", "child_index", "parent_content"],
         )
+
+        # ===== 调试开始 =====
+        print(f"hybrid_search 原始返回: {results}")
+        print(f"results 类型: {type(results)}")
+        if results:
+            print(f"results 长度: {len(results)}")
+            if len(results) > 0:
+                print(f"results[0] 类型: {type(results[0])}")
+                print(f"results[0] 内容: {results[0]}")
+                if isinstance(results[0], list):
+                    print(f"results[0] 长度: {len(results[0])}")
+                    if len(results[0]) > 0:
+                        print(f"第一条结果: {results[0][0]}")
+                        print(f"第一条结果的 keys: {results[0][0].keys() if hasattr(results[0][0], 'keys') else 'no keys'}")
+        else:
+            print("results 是空的!")
+        # ===== 调试结束 =====
         
-        return results[0] if results else []
+        raw_results = results[0] if results else []
+        # 去重：同一父文档只保留一个
+        return self._deduplicate_by_parent(raw_results)
     
+    def _deduplicate_by_parent(self, results: List[Dict]) -> List[Dict]:
+        """按父文档去重，返回父文档内容"""
+        seen_parents = set()
+        unique_results = []
+        
+        for hit in results:
+            parent_id = hit["entity"].get("parent_id")
+            
+            if parent_id and parent_id not in seen_parents:
+                seen_parents.add(parent_id)
+                unique_results.append({
+                    "id": hit["id"],
+                    "parent_id": parent_id,
+                    "parent_content": hit["entity"].get("parent_content", ""),
+                    "matched_child": hit["entity"].get("content", ""),
+                    "child_index": hit["entity"].get("child_index", 0),
+                    "score": hit["distance"],
+                })
+        
+        return unique_results
+
     def delete(self, ids: List[str]):
         """
         删除数据
