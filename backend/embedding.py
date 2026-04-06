@@ -130,3 +130,4 @@ class Vocabulary:
         self.id2word = {int(k): v for k, v in data["id2word"].items()}
         self.idf = data["idf"]
         self.avg_doc_len = data["avg_doc_len"]
+

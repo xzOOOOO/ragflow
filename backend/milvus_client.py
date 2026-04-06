@@ -1,7 +1,6 @@
 import pymilvus as milvus
 from pymilvus import MilvusClient, DataType, AnnSearchRequest, RRFRanker
-from typing import List, Dict
-
+from typing import List, Dict, Optional
 class MilvusManager:
     """
     Milvus 向量数据库管理器
@@ -28,15 +27,20 @@ class MilvusManager:
             return
         
         schema = client.create_schema(auto_id=False, enable_dynamic_field=True)
+
         schema.add_field("id", DataType.VARCHAR, is_primary=True, max_length=100)
-        schema.add_field("dense_vector", DataType.FLOAT_VECTOR, dim=dense_dim)
-        schema.add_field("sparse_vector", DataType.SPARSE_FLOAT_VECTOR)
-        schema.add_field("content", DataType.VARCHAR, max_length=65535)
-        #父文档相关
-        schema.add_field("parent_id", DataType.VARCHAR, max_length=100)
+        schema.add_field("doc_id", DataType.VARCHAR, max_length=100)
+        schema.add_field("level", DataType.INT64)  # 新增：1=L1, 2=L2, 3=L3
+        schema.add_field("parent_id", DataType.VARCHAR, max_length=100)      # L3→L2, L2→L1
+        schema.add_field("grandparent_id", DataType.VARCHAR, max_length=100)  # 新增：L3→L1
         schema.add_field("child_index", DataType.INT64)
-        schema.add_field("parent_content", DataType.VARCHAR, max_length=65535)
-        
+        schema.add_field("content", DataType.VARCHAR, max_length=65535)
+
+        # 只有 L3 有向量，L1/L2 的向量为空
+        schema.add_field("dense_vector", DataType.FLOAT_VECTOR, dim=768)
+        schema.add_field("sparse_vector", DataType.SPARSE_FLOAT_VECTOR)
+
+        # 索引
         index_params = client.prepare_index_params()
         index_params.add_index("dense_vector", metric_type="COSINE", index_type="IVF_FLAT")
         index_params.add_index("sparse_vector", metric_type="IP", index_type="SPARSE_INVERTED_INDEX")
@@ -61,26 +65,30 @@ class MilvusManager:
         return result
     
     def hybrid_retrieve(
-        self,
-        dense_vector: List[float],
-        sparse_vector: Dict[int, float],
-        top_k: int = 10,
-    ) -> List[Dict]:
+    self,
+    query_dense: List[float],
+    query_sparse: Dict[int, float],
+    top_k: int = 10,
+) -> List[Dict]:
         """
-        混合检索（密集 + 稀疏 → RRF融合）
-        返回去重后的父文档
+        混合检索：只检索 L3 叶子块
+        
+        使用 Hybrid Search：
+        1. 稠密向量检索（doc_level_vector）
+        2. 稀疏向量检索（BM25）
+        3. RRF 融合
         """
         client = self._get_client()
         
         dense_req = AnnSearchRequest(
-            data=[dense_vector],
+            data=[query_dense],
             anns_field="dense_vector",
             param={"metric_type": "COSINE"},
             limit=top_k,
         )
         
         sparse_req = AnnSearchRequest(
-            data=[sparse_vector],
+            data=[query_sparse],
             anns_field="sparse_vector",
             param={"metric_type": "IP"},
             limit=top_k,
@@ -91,50 +99,144 @@ class MilvusManager:
             reqs=[dense_req, sparse_req],
             ranker=RRFRanker(k=60),
             limit=top_k,
-            output_fields=["content", "parent_id", "child_index", "parent_content"],
+            output_fields=["id", "doc_id", "level", "parent_id", "grandparent_id", 
+                        "child_index", "content"],
         )
-
-        # ===== 调试开始 =====
-        print(f"hybrid_search 原始返回: {results}")
-        print(f"results 类型: {type(results)}")
-        if results:
-            print(f"results 长度: {len(results)}")
-            if len(results) > 0:
-                print(f"results[0] 类型: {type(results[0])}")
-                print(f"results[0] 内容: {results[0]}")
-                if isinstance(results[0], list):
-                    print(f"results[0] 长度: {len(results[0])}")
-                    if len(results[0]) > 0:
-                        print(f"第一条结果: {results[0][0]}")
-                        print(f"第一条结果的 keys: {results[0][0].keys() if hasattr(results[0][0], 'keys') else 'no keys'}")
-        else:
-            print("results 是空的!")
-        # ===== 调试结束 =====
         
         raw_results = results[0] if results else []
-        # 去重：同一父文档只保留一个
-        return self._deduplicate_by_parent(raw_results)
-    
-    def _deduplicate_by_parent(self, results: List[Dict]) -> List[Dict]:
-        """按父文档去重，返回父文档内容"""
-        seen_parents = set()
-        unique_results = []
-        
+        return self._extract_l3_results(raw_results)
+
+    def _extract_l3_results(self, results: List[Dict]) -> List[Dict]:
+        """提取 L3 检索结果"""
+        extracted = []
         for hit in results:
-            parent_id = hit["entity"].get("parent_id")
-            
-            if parent_id and parent_id not in seen_parents:
-                seen_parents.add(parent_id)
-                unique_results.append({
+            entity = hit.get("entity", {})
+            if entity.get("level") == 3:
+                extracted.append({
                     "id": hit["id"],
-                    "parent_id": parent_id,
-                    "parent_content": hit["entity"].get("parent_content", ""),
-                    "matched_child": hit["entity"].get("content", ""),
-                    "child_index": hit["entity"].get("child_index", 0),
+                    "doc_id": entity.get("doc_id", ""),
+                    "level": entity.get("level", 3),
+                    "parent_id": entity.get("parent_id", ""),
+                    "grandparent_id": entity.get("grandparent_id", ""),
+                    "child_index": entity.get("child_index", 0),
+                    "content": entity.get("content", ""),
                     "score": hit["distance"],
                 })
+        return extracted
+
+    def auto_merge(
+    self,
+    results: List[Dict],
+    merge_to_l2: bool = True,
+    merge_to_l1: bool = True,
+) -> List[Dict]:
+        """
+        AutoMerge: L3 碎片合并 + 扩展到 L2/L1 上下文
         
-        return unique_results
+        流程：
+        1. 按 parent_id 分组
+        2. 同组内按 child_index 排序
+        3. 连续的碎片合并成一段
+        4. 根据 parent_id 查找 L2 内容
+        5. 根据 grandparent_id 查找 L1 内容
+        """
+        if not results:
+            return []
+        
+        # 第一步：按 (parent_id, child_index) 排序
+        sorted_results = sorted(results, key=lambda x: (x['parent_id'], x['child_index']))
+        
+        # 第二步：分组 + 连续合并
+        merged_groups = []
+        current_group = None
+        
+        for hit in sorted_results:
+            if current_group is None:
+                # 开始新组
+                current_group = {
+                    'parent_id': hit['parent_id'],
+                    'grandparent_id': hit['grandparent_id'],
+                    'child_indices': [hit['child_index']],
+                    'l3_contents': [hit['content']],
+                    'scores': [hit['score']],
+                }
+            else:
+                # 判断是否可以合并到当前组
+                is_same_parent = hit['parent_id'] == current_group['parent_id']
+                is_consecutive = hit['child_index'] == current_group['child_indices'][-1] + 1
+                
+                if is_same_parent and is_consecutive:
+                    # 连续 → 合并到当前组
+                    current_group['child_indices'].append(hit['child_index'])
+                    current_group['l3_contents'].append(hit['content'])
+                    current_group['scores'].append(hit['score'])
+                else:
+                    # 不连续 → 保存当前组，开始新组
+                    merged_groups.append(current_group)
+                    current_group = {
+                        'parent_id': hit['parent_id'],
+                        'grandparent_id': hit['grandparent_id'],
+                        'child_indices': [hit['child_index']],
+                        'l3_contents': [hit['content']],
+                        'scores': [hit['score']],
+                    }
+        
+        # 别忘记最后一个组
+        if current_group:
+            merged_groups.append(current_group)
+        
+        # 第三步：扩展到 L2/L1 上下文
+        final_results = []
+        for group in merged_groups:
+            parent_id = group['parent_id']
+            grandparent_id = group['grandparent_id']
+            
+            l2_content = ""
+            l1_content = ""
+            
+            # 查 L2 内容
+            if merge_to_l2 and parent_id:
+                l2_data = self._get_chunk_by_id(parent_id)
+                if l2_data:
+                    l2_content = l2_data["content"]
+            
+            # 查 L1 内容
+            if merge_to_l1 and grandparent_id:
+                l1_data = self._get_chunk_by_id(grandparent_id)
+                if l1_data:
+                    l1_content = l1_data["content"]
+            
+            final_results.append({
+                'merged_l3_content': '\n\n'.join(group['l3_contents']),  # 合并后的碎片
+                'l2_content': l2_content,                                 # L2 父块
+                'l1_content': l1_content,                                 # L1 祖父块
+                'child_count': len(group['l3_contents']),
+                'child_indices': group['child_indices'],
+                'score': sum(group['scores']) / len(group['scores']),      # 平均分
+            })
+        
+        # 按分数排序返回
+        return sorted(final_results, key=lambda x: x['score'], reverse=True)
+
+    def _get_chunk_by_id(self, chunk_id: str) -> Optional[Dict]:
+        """
+        根据 ID 获取 chunk 内容（用于 AutoMerge 扩展上下文）
+        
+        因为 L1/L2 没有向量，所以需要单独查询
+        """
+        client = self._get_client()
+        try:
+            results = client.query(
+                collection_name=self.collection_name,
+                filter=f'id == "{chunk_id}"',
+                output_fields=["content"],
+                limit=1,
+            )
+            if results:
+                return results[0]
+        except Exception:
+            pass
+        return None
 
     def delete(self, ids: List[str]):
         """
