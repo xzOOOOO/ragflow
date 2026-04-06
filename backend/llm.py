@@ -2,6 +2,8 @@ from langchain_openai import ChatOpenAI
 from typing import Optional, List
 from langchain_core.prompts import PromptTemplate
 from langchain_core.output_parsers import StrOutputParser, JsonOutputParser
+
+from backend.db import PostgresClient
 from .embedding import EmbeddingService
 from .rerank import RerankerService
 from .milvus_client import MilvusManager
@@ -118,6 +120,29 @@ class RewriteService:
             return result.get("sub_questions", [])
         except:
             return [query]
+    
+    def expand_query(self, query: str) -> list:
+        """
+        Query 扩展：将问题扩展为多个相关查询
+        """
+        prompt = PromptTemplate.from_template(
+            """你是一个查询优化专家。
+
+    用户问题：{query}
+
+    请将这个问题扩展为3个不同的相关查询。
+    每个查询应该从不同角度切入，但都围绕原问题的核心。
+
+    请严格按以下 JSON 格式输出（只输出 JSON）：
+    {{"expanded_queries": ["查询1", "查询2", "查询3"]}}"""
+        )
+        
+        chain = prompt | self.llm | JsonOutputParser()
+        try:
+            result = chain.invoke({"query": query})
+            return result.get("expanded_queries", [query])
+        except:
+            return [query]
 
 class TwoStageRecallService:
     """二次召回服务"""
@@ -128,13 +153,15 @@ class TwoStageRecallService:
         milvus_manager: MilvusManager,
         reranker: RerankerService,
         rewrite_service: RewriteService,
-        grading_service: GradingService = None,
+        grading_service: GradingService,
+        pg_client: PostgresClient,
     ):
         self.embedding = embedding_service
         self.milvus = milvus_manager
         self.reranker = reranker
         self.rewrite = rewrite_service
         self.grading = grading_service
+        self.pg_client = pg_client
     
     def two_stage_retrieve(
         self,
@@ -158,7 +185,7 @@ class TwoStageRecallService:
         if self.reranker:
             l3_results = self.reranker.rerank_with_context(query, l3_results, top_k=top_k)
         
-        merged = self.milvus.auto_merge(l3_results, merge_to_l2=True, merge_to_l1=True)
+        merged = self.milvus.auto_merge(l3_results, self.pg_client, merge_to_l2=True, merge_to_l1=True)
         
         # ===== 判断是否需要二次召回 =====
         best_context = merged[0]['merged_l3_content'] if merged else ""
@@ -192,17 +219,25 @@ class TwoStageRecallService:
             
             # 合并去重
             if second_stage_results:
-                seen_ids = set(r['hit']['id'] for r in merged)
+                # 从 l3_results 和 second_stage_results 合并（有 id）
+                seen_ids = set()
+                all_l3_results = []
+                
+                for r in l3_results:
+                    if r['id'] not in seen_ids:
+                        all_l3_results.append(r)
+                        seen_ids.add(r['id'])
+                
                 for r in second_stage_results:
-                    if r['hit']['id'] not in seen_ids:
-                        merged.append(r)
-                        seen_ids.add(r['hit']['id'])
+                    if r['id'] not in seen_ids:
+                        all_l3_results.append(r)
+                        seen_ids.add(r['id'])
                 
                 if self.reranker:
-                    merged = self.reranker.rerank_with_context(query, merged, top_k=top_k)
+                    all_l3_results = self.reranker.rerank_with_context(query, all_l3_results, top_k=top_k)
                 
-                merged = self.milvus.auto_merge(merged, merge_to_l2=True, merge_to_l1=True)
-        
+                merged = self.milvus.auto_merge(all_l3_results, self.pg_client, merge_to_l2=True, merge_to_l1=True)
+                    
         return {
             "success": True,
             "results": merged[:top_k],

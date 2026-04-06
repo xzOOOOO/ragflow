@@ -1,6 +1,8 @@
 import pymilvus as milvus
 from pymilvus import MilvusClient, DataType, AnnSearchRequest, RRFRanker
 from typing import List, Dict, Optional
+from .db import PostgresClient
+
 class MilvusManager:
     """
     Milvus 向量数据库管理器
@@ -30,7 +32,6 @@ class MilvusManager:
 
         schema.add_field("id", DataType.VARCHAR, is_primary=True, max_length=100)
         schema.add_field("doc_id", DataType.VARCHAR, max_length=100)
-        schema.add_field("level", DataType.INT64)  # 新增：1=L1, 2=L2, 3=L3
         schema.add_field("parent_id", DataType.VARCHAR, max_length=100)      # L3→L2, L2→L1
         schema.add_field("grandparent_id", DataType.VARCHAR, max_length=100)  # 新增：L3→L1
         schema.add_field("child_index", DataType.INT64)
@@ -99,7 +100,7 @@ class MilvusManager:
             reqs=[dense_req, sparse_req],
             ranker=RRFRanker(k=60),
             limit=top_k,
-            output_fields=["id", "doc_id", "level", "parent_id", "grandparent_id", 
+            output_fields=["id", "doc_id", "parent_id", "grandparent_id", 
                         "child_index", "content"],
         )
         
@@ -111,22 +112,21 @@ class MilvusManager:
         extracted = []
         for hit in results:
             entity = hit.get("entity", {})
-            if entity.get("level") == 3:
-                extracted.append({
-                    "id": hit["id"],
-                    "doc_id": entity.get("doc_id", ""),
-                    "level": entity.get("level", 3),
-                    "parent_id": entity.get("parent_id", ""),
-                    "grandparent_id": entity.get("grandparent_id", ""),
-                    "child_index": entity.get("child_index", 0),
-                    "content": entity.get("content", ""),
-                    "score": hit["distance"],
+            extracted.append({
+                "id": hit["id"],
+                "doc_id": entity.get("doc_id", ""),
+                "parent_id": entity.get("parent_id", ""),
+                "grandparent_id": entity.get("grandparent_id", ""),
+                "child_index": entity.get("child_index", 0),
+                "content": entity.get("content", ""),
+                "score": hit["distance"],
                 })
         return extracted
 
     def auto_merge(
     self,
     results: List[Dict],
+    pg_client: PostgresClient,
     merge_to_l2: bool = True,
     merge_to_l1: bool = True,
 ) -> List[Dict]:
@@ -196,13 +196,13 @@ class MilvusManager:
             
             # 查 L2 内容
             if merge_to_l2 and parent_id:
-                l2_data = self._get_chunk_by_id(parent_id)
+                l2_data = pg_client.get_chunk_by_id(parent_id)
                 if l2_data:
                     l2_content = l2_data["content"]
             
             # 查 L1 内容
             if merge_to_l1 and grandparent_id:
-                l1_data = self._get_chunk_by_id(grandparent_id)
+                l1_data = pg_client.get_chunk_by_id(grandparent_id)
                 if l1_data:
                     l1_content = l1_data["content"]
             
@@ -218,25 +218,6 @@ class MilvusManager:
         # 按分数排序返回
         return sorted(final_results, key=lambda x: x['score'], reverse=True)
 
-    def _get_chunk_by_id(self, chunk_id: str) -> Optional[Dict]:
-        """
-        根据 ID 获取 chunk 内容（用于 AutoMerge 扩展上下文）
-        
-        因为 L1/L2 没有向量，所以需要单独查询
-        """
-        client = self._get_client()
-        try:
-            results = client.query(
-                collection_name=self.collection_name,
-                filter=f'id == "{chunk_id}"',
-                output_fields=["content"],
-                limit=1,
-            )
-            if results:
-                return results[0]
-        except Exception:
-            pass
-        return None
 
     def delete(self, ids: List[str]):
         """
