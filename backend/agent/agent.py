@@ -11,7 +11,7 @@ from backend.llm import LLMService
 class ReActAgent:
     """ReAct Agent - 思考→行动→观察 循环"""
 
-    MAX_ITERATIONS = 10  # 最多循环次数，防止死循环
+    MAX_ITERATIONS = 3  # 最多循环次数，防止死循环
 
     def __init__(
         self,
