@@ -128,8 +128,7 @@ class MilvusManager:
     results: List[Dict],
     pg_client: PostgresClient,
     merge_to_l2: bool = True,
-    merge_to_l1: bool = True,
-) -> List[Dict]:
+    merge_to_l1: bool = True,) -> List[Dict]:
         """
         AutoMerge: L3 碎片合并 + 扩展到 L2/L1 上下文
         
