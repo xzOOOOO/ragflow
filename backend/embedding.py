@@ -12,26 +12,72 @@ import json
 
 
 class EmbeddingService:
-    def __init__(self):
-        self.dense_model=None # 稠密向量模型
-        self.vocab=None # 词汇表
+    def __init__(self, provider: str = "local", api_key: str = None, api_base: str = None, model_name: str = None):
+        self.provider = provider
+        self.api_key = api_key
+        self.api_base = api_base
+        self.dense_model = None
+        self.vocab = None
         self.k1 = 1.5
         self.b = 0.75
+        
+        if model_name:
+            self.load_dense_model(model_name)
     def load_dense_model(self, model_name: str):
-        """
-        加载稠向量模型
-        """
-        if self.dense_model is None:
-            self.dense_model=HuggingFaceEmbeddings(model_name=model_name,
+        """根据 provider 类型加载模型"""
+        if self.provider == "local":
+            # 原有本地加载逻辑
+            self.dense_model = HuggingFaceEmbeddings(
+                model_name=model_name,
                 model_kwargs={"device": "cuda" if torch.cuda.is_available() else "cpu"},
-                encode_kwargs={ "normalize_embeddings": True},)
+                encode_kwargs={"normalize_embeddings": True},
+            )
+        elif self.provider == "openai":
+            # OpenAI API 方式
+            from openai import OpenAI
+            self.openai_client = OpenAI(api_key=self.api_key, base_url=self.api_base)
+            self.embedding_model = model_name
+        elif self.provider == "cohere":
+            # Cohere API 方式
+            import cohere
+            self.cohere_client = cohere.Client(self.api_key)
+            self.embedding_model = model_name
+        elif self.provider == "zhipu":
+            # 智谱 AI 方式
+            from zhipuai import ZhipuAI
+            self.zhipu_client = ZhipuAI(api_key=self.api_key)
+            self.embedding_model = model_name
     
 
-    def embed_dense(self, documents: List[str])->List[List[float]]:
-        """
-        稠密向量嵌入
-        """
-        return self.dense_model.embed_documents(texts=documents)
+    def embed_dense(self, documents: List[str]) -> List[List[float]]:
+        """稠密向量嵌入 - 根据 provider 调用不同接口"""
+        if self.provider == "local":
+            return self.dense_model.embed_documents(texts=documents)
+        elif self.provider == "openai":
+            results = []
+            batch_size = 25
+            for i in range(0, len(documents), batch_size):
+                batch = documents[i:i + batch_size]
+                response = self.openai_client.embeddings.create(
+                    model=self.embedding_model,
+                    input=batch
+                )
+                results.extend([item.embedding for item in response.data])
+            return results
+        elif self.provider == "cohere":
+            response = self.cohere_client.embed(texts=documents, model=self.embedding_model)
+            return response.embeddings
+        elif self.provider == "zhipu":
+            results = []
+            batch_size = 25
+            for i in range(0, len(documents), batch_size):
+                batch = documents[i:i + batch_size]
+                response = self.zhipu_client.embeddings.create(
+                    model=self.embedding_model,
+                    input=batch
+                )
+                results.extend([item.embedding for item in response.data])
+            return results
     
     def build_vocab(self, documents: List[str]):
         """
@@ -83,7 +129,7 @@ class EmbeddingService:
         """
         查询向量嵌入
         """
-        if self.dense_model is None:
+        if self.provider == "local" and self.dense_model is None:
             raise ValueError("请先加载稠向量模型")
         elif self.vocab is None:
             raise ValueError("请先构建词汇表")

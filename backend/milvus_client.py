@@ -38,7 +38,7 @@ class MilvusManager:
         schema.add_field("content", DataType.VARCHAR, max_length=65535)
 
         # 只有 L3 有向量，L1/L2 的向量为空
-        schema.add_field("dense_vector", DataType.FLOAT_VECTOR, dim=768)
+        schema.add_field("dense_vector", DataType.FLOAT_VECTOR, dim=dense_dim)
         schema.add_field("sparse_vector", DataType.SPARSE_FLOAT_VECTOR)
 
         # 索引

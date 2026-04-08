@@ -1,6 +1,12 @@
 # backend/config.py
 import os
+from pathlib import Path
 from functools import lru_cache
+from dotenv import load_dotenv
+
+env_path = Path(__file__).parent.parent / ".env"
+if env_path.exists():
+    load_dotenv(env_path, override=True)
 
 class Config:
     def __init__(self):
@@ -9,9 +15,17 @@ class Config:
         self.OPENAI_BASE_URL = os.getenv("BASE_URL", "https://api.openai.com/v1")
         self.LLM_MODEL = os.getenv("MODEL", "gpt-4")
         
-        # Embedding 配置
+        # Embedding 线上服务配置
+        self.EMBEDDING_PROVIDER = os.getenv("EMBEDDING_PROVIDER", "local")  # 可选: local / openai / cohere / zhipu
+        self.EMBEDDING_API_KEY = os.getenv("EMBEDDING_API_KEY", "")
+        self.EMBEDDING_API_BASE = os.getenv("EMBEDDING_API_BASE", "")  # 如果使用代理或自建服务
         self.EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "sentence-transformers/all-MiniLM-L6-v2")
-        self.RERANKER_MODEL = os.getenv("RERANKER_MODEL", "sentence-transformers/bge-reranker-base")
+
+        # Reranker 线上服务配置
+        self.RERANK_PROVIDER = os.getenv("RERANK_PROVIDER", "local")  # 可选: local / cohere / openai
+        self.RERANK_API_KEY = os.getenv("RERANK_API_KEY", "")
+        self.RERANK_API_BASE = os.getenv("RERANK_API_BASE", "")
+        self.RERANKER_MODEL = os.getenv("RERANKER_MODEL", "bge-reranker-base")
         
         # Milvus 配置
         self.MILVUS_HOST = os.getenv("MILVUS_HOST", "localhost")

@@ -16,7 +16,10 @@ class Services:
         config = get_config()
         
         # 初始化 Embedding 服务
-        self.embedding_service = EmbeddingService()
+        self.embedding_service = EmbeddingService(provider=config.EMBEDDING_PROVIDER,
+            api_key=config.EMBEDDING_API_KEY,
+            api_base=config.EMBEDDING_API_BASE,
+            model_name=config.EMBEDDING_MODEL)
         self.embedding_service.load_dense_model(config.EMBEDDING_MODEL)
         
         # 初始化 LLM 服务
@@ -43,7 +46,9 @@ class Services:
         from backend.agent.toolservice import ToolRegistry
         from backend.rerank import RerankerService
         
-        self.reranker = RerankerService(config.RERANKER_MODEL)
+        self.reranker = RerankerService(provider=config.RERANK_PROVIDER,
+            api_key=config.RERANK_API_KEY,
+            model_name=config.RERANKER_MODEL)
         
         # 为 Agent 创建一个跨文档检索的 RAG 工具
         self.rag_tool = CrossDocRAGRetrieveTool(
