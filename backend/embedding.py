@@ -41,6 +41,15 @@ class EmbeddingService:
             self.vocab=Vocabulary()
             self.vocab.build(documents)
 
+    def load(self, filepath: str):
+        """从文件加载词表"""
+        with open(filepath, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        self.word2id = {k: int(v) for k, v in data["word2id"].items()}
+        self.id2word = {int(k): v for k, v in data["id2word"].items()}
+        self.idf = data["idf"]
+        self.avg_doc_len = data["avg_doc_len"]
+
     def compute_bm25_sparse_vector(self,documents: List[str]) -> List[dict]:
         """
         将文本转换为 BM25 稀疏向量
@@ -115,12 +124,14 @@ class Vocabulary:
         """保存词表到文件"""
         data = {
             "word2id": self.word2id,
-            "id2word": self.id2word,
+            "id2word": {str(k): v for k, v in self.id2word.items()},
             "idf": self.idf,
             "avg_doc_len": self.avg_doc_len,
+            "doc_count": getattr(self, 'doc_count', 1),
+            "word_doc_freq": {k: v for k, v in getattr(self, 'word_doc_freq', {}).items()},
         }
         with open(filepath, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False)
+            json.dump(data, f, ensure_ascii=False, indent=2)
 
     def load(self, filepath: str):
         """从文件加载词表"""
@@ -130,4 +141,6 @@ class Vocabulary:
         self.id2word = {int(k): v for k, v in data["id2word"].items()}
         self.idf = data["idf"]
         self.avg_doc_len = data["avg_doc_len"]
+        self.doc_count = data.get("doc_count", 1)
+        self.word_doc_freq = data.get("word_doc_freq", {})
 

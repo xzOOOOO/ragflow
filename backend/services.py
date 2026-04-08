@@ -1,12 +1,13 @@
-# backend/services.py
+
 from functools import lru_cache
+from backend.config import get_config
 from backend.embedding import EmbeddingService
 from backend.llm import LLMService
-from backend.milvus_client import MilvusManager
-from backend.rerank import RerankerService
 from backend.db import PostgresClient
-from backend.agent.tools import RAGRetrieveTool
-from backend.config import get_config
+from backend.rerank import RerankerService
+from backend.document_manager import DocumentManager
+from backend.agent.tools import CrossDocRAGRetrieveTool
+
 
 class Services:
     _instance = None
@@ -25,32 +26,41 @@ class Services:
             model=config.LLM_MODEL
         )
         
-        # 初始化 Milvus
-        self.milvus_manager = MilvusManager(
-            host=config.MILVUS_HOST,
-            port=config.MILVUS_PORT,
-            collection_name=config.MILVUS_COLLECTION
-        )
-        
-        # 初始化重排序
-        self.reranker = RerankerService()
-        
         # 初始化 PostgreSQL
-        self.pg_client = PostgresClient(
-            host=config.PG_HOST,
-            port=config.PG_PORT,
-            database=config.PG_DATABASE,
-            user=config.PG_USER,
-            password=config.PG_PASSWORD
+        self.pg_client = PostgresClient(config.get_database_url())
+        self.pg_client.init_schema()
+        
+        # 初始化文档管理器（处理上传/删除）
+        self.doc_manager = DocumentManager(
+            embedding_service=self.embedding_service,
+            pg_client=self.pg_client,
+            milvus_uri=f"http://{config.MILVUS_HOST}:{config.MILVUS_PORT}",
         )
         
-        # 初始化 RAG 工具
-        self.rag_tool = RAGRetrieveTool(
+        # 初始化 Agent
+        from backend.agent.agent import ReActAgent
+        from backend.agent.tools import RAGRetrieveTool
+        from backend.agent.toolservice import ToolRegistry
+        from backend.rerank import RerankerService
+        
+        self.reranker = RerankerService(config.RERANKER_MODEL)
+        
+        # 为 Agent 创建一个跨文档检索的 RAG 工具
+        self.rag_tool = CrossDocRAGRetrieveTool(
             embedding_service=self.embedding_service,
-            milvus_manager=self.milvus_manager,
+            doc_manager=self.doc_manager,
+            pg_client=self.pg_client,
             reranker=self.reranker,
             llm_service=self.llm_service,
-            pg_client=self.pg_client
+        )
+        
+        # 初始化 Agent
+        self.tool_registry = ToolRegistry()
+        self.tool_registry.register(self.rag_tool)
+        
+        self.agent = ReActAgent(
+            llm_service=self.llm_service,
+            tool_registry=self.tool_registry,
         )
 
 @lru_cache()

@@ -34,11 +34,11 @@ class PostgresClient:
     def __init__(self, database_url: str = None):
         if database_url is None:
             # 从环境变量构建
-            host = os.getenv("DB_HOST", "localhost")
-            port = os.getenv("DB_PORT", "5432")
-            dbname = os.getenv("DB_NAME", "ragdb")
-            user = os.getenv("DB_USER", "postgres")
-            password = os.getenv("DB_PASSWORD", "")
+            host = os.getenv("PG_HOST", "localhost")
+            port = os.getenv("PG_PORT", "5432")
+            dbname = os.getenv("PG_NAME", "ragdb")
+            user = os.getenv("PG_USER", "postgres")
+            password = os.getenv("PG_PASSWORD", "")
             database_url = f"postgresql://{user}:{password}@{host}:{port}/{dbname}"
         
         self.engine = create_engine(database_url)
@@ -104,3 +104,27 @@ class PostgresClient:
     
     def close(self):
         self.engine.dispose()
+
+    def delete_chunks_by_doc_id(self, doc_id: str):
+        """删除某个文档的所有 chunks"""
+        session = self.Session()
+        try:
+            session.query(ChunkParent).filter(ChunkParent.doc_id == doc_id).delete()
+            session.commit()
+        finally:
+            session.close()
+
+    def list_documents(self) -> List[Dict]:
+        """列出所有文档"""
+        session = self.Session()
+        try:
+            chunks = session.query(ChunkParent).filter(ChunkParent.level == 1).distinct(ChunkParent.doc_id).all()
+            return [
+                {
+                    "doc_id": chunk.doc_id,
+                    "created_at": chunk.created_at.isoformat() if chunk.created_at else None,
+                }
+                for chunk in chunks
+            ]
+        finally:
+            session.close()

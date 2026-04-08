@@ -11,6 +11,7 @@ class Config:
         
         # Embedding 配置
         self.EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "sentence-transformers/all-MiniLM-L6-v2")
+        self.RERANKER_MODEL = os.getenv("RERANKER_MODEL", "sentence-transformers/bge-reranker-base")
         
         # Milvus 配置
         self.MILVUS_HOST = os.getenv("MILVUS_HOST", "localhost")
@@ -27,6 +28,11 @@ class Config:
         # RAG 配置
         self.DEFAULT_TOP_K = int(os.getenv("DEFAULT_TOP_K", "5"))
         self.DEFAULT_STRATEGY = os.getenv("DEFAULT_STRATEGY", "step_back")
+    
+    # backend/config.py 的 Config 类中添加
+
+    def get_database_url(self) -> str:
+        return f"postgresql://{self.PG_USER}:{self.PG_PASSWORD}@{self.PG_HOST}:{self.PG_PORT}/{self.PG_DATABASE}"
 
 @lru_cache()
 def get_config():
