@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from langchain_huggingface import HuggingFaceEmbeddings
 import torch
 
@@ -96,11 +98,13 @@ class EmbeddingService:
         self.idf = data["idf"]
         self.avg_doc_len = data["avg_doc_len"]
 
-    def compute_bm25_sparse_vector(self,documents: List[str]) -> List[dict]:
+    def compute_bm25_sparse_vector(self,documents: List[str],vocab: Vocabulary = None) -> List[dict]:
         """
         将文本转换为 BM25 稀疏向量
         返回 {word_id: bm25_score}
         """
+        if vocab is None:
+            vocab=self.vocab
         sparse_vectors = []
         for doc in documents:
             words = jieba.lcut(doc)
@@ -110,14 +114,14 @@ class EmbeddingService:
             sparse_vec = {}
             
             for word, tf in word_freq.items():
-                if word not in self.vocab.word2id:
+                if word not in vocab.word2id:
                     continue
                 
-                word_id = self.vocab.word2id[word]
-                idf = self.vocab.idf[word]
+                word_id = vocab.word2id[word]
+                idf = vocab.idf[word]
                 
                 numerator = tf * (self.k1 + 1)
-                denominator = tf + self.k1 * (1 - self.b + self.b * doc_len / self.vocab.avg_doc_len)
+                denominator = tf + self.k1 * (1 - self.b + self.b * doc_len / vocab.avg_doc_len)
                 score = idf * numerator / denominator
                 if score > 0:
                     sparse_vec[word_id] = score
@@ -125,16 +129,17 @@ class EmbeddingService:
             sparse_vectors.append(sparse_vec)
         return sparse_vectors
 
-    def embed_query(self, query: str) -> tuple[List[float],dict]:
+    def embed_query(self, query: str,vocab: Vocabulary = None) -> tuple[List[float],dict]:
         """
         查询向量嵌入
         """
+        
         if self.provider == "local" and self.dense_model is None:
             raise ValueError("请先加载稠向量模型")
-        elif self.vocab is None:
-            raise ValueError("请先构建词汇表")
+        if vocab is None:
+            vocab=self.vocab
         dense_embedding=self.embed_dense([query])[0]
-        sparse_embedding=self.compute_bm25_sparse_vector([query])[0]
+        sparse_embedding=self.compute_bm25_sparse_vector([query],vocab)[0]
         return (dense_embedding,sparse_embedding)
         
 

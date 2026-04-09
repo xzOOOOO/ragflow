@@ -83,9 +83,9 @@ class DocumentService:
         处理文档，生成三级分块结构
         
         分块策略：
-        - L1: 2000-3000 token，保留完整主题单元
-        - L2: 1024 token 左右，承接上下文
-        - L3: 400-512 token，向量检索的最小单元
+        - L1: 1200 token，保留完整主题单元
+        - L2: 600 token 左右，承接上下文
+        - L3: 300 token，向量检索的最小单元
         """
         # 1. 加载文档
         documents = self.load_documents(file_path)
@@ -95,8 +95,8 @@ class DocumentService:
         
         # 2. L1 分块（最大粒度）
         l1_splitter = RecursiveCharacterTextSplitter(
-            chunk_size=2500,      # L1: 2000-3000 token
-            chunk_overlap=200,
+            chunk_size=1200,      # L1: 2000-3000 token
+            chunk_overlap=240,
             separators=["\n\n\n", "\n\n", "\n", "。", "！", "？", "；", "，", " ", ""],
             keep_separator=True,
             length_function=len,
@@ -108,8 +108,8 @@ class DocumentService:
             
             # 3. L2 分块（中粒度）
             l2_splitter = RecursiveCharacterTextSplitter(
-                chunk_size=1000,    # L2: 1024 token
-                chunk_overlap=100,
+                chunk_size=600,    # L2: 1024 token
+                chunk_overlap=120,
                 separators=["\n\n", "\n", "。", "！", "？", "；", "，", " ", ""],
                 keep_separator=True,
                 length_function=len,
@@ -121,8 +121,8 @@ class DocumentService:
                 
                 # 4. L3 分块（最小粒度）
                 l3_splitter = RecursiveCharacterTextSplitter(
-                    chunk_size=400,   # L3: 400-512 token
-                    chunk_overlap=50,
+                    chunk_size=300,   # L3: 400-512 token
+                    chunk_overlap=60,
                     separators=["\n\n", "\n", "。", "！", "？", "；", "，", " ", ""],
                     keep_separator=True,
                     length_function=len,

@@ -1,3 +1,4 @@
+import copy
 import os
 
 from backend.agent.toolservice import Tool, ToolRegistry
@@ -6,6 +7,7 @@ from backend.llm import LLMService,TwoStageRecallService,RewriteService,GradingS
 from backend.embedding import EmbeddingService
 from backend.rerank import RerankerService
 from backend.document_manager import DocumentManager
+from backend.embedding import Vocabulary
 
 class RAGRetrieveTool(Tool):
     """RAG 检索工具"""
@@ -22,6 +24,7 @@ class RAGRetrieveTool(Tool):
         pg_client,
         top_k: int = 5,
         strategy: str = "step_back",
+        vocab: Vocabulary = None,
     ):
         self.two_stage = TwoStageRecallService(
             embedding_service=embedding_service,
@@ -30,6 +33,7 @@ class RAGRetrieveTool(Tool):
             rewrite_service=RewriteService(llm_service),
             grading_service=GradingService(llm_service),
             pg_client=pg_client,
+            vocab=vocab,
         )
         self.top_k = top_k
         self.strategy = strategy
@@ -102,6 +106,7 @@ class CrossDocRAGRetrieveTool(RAGRetrieveTool):
         llm_service: LLMService,
         top_k: int = 5,
         strategy: str = "step_back",
+        vocab: Vocabulary = None,
     ):
         self.embedding_service = embedding_service
         self.doc_manager = doc_manager
@@ -120,6 +125,7 @@ class CrossDocRAGRetrieveTool(RAGRetrieveTool):
             rewrite_service=RewriteService(llm_service),
             grading_service=GradingService(llm_service),
             pg_client=pg_client,
+            vocab=vocab,
         )
 
     def invoke(self, query: str, **kwargs) -> dict:
@@ -151,22 +157,26 @@ class CrossDocRAGRetrieveTool(RAGRetrieveTool):
                 vocab_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "data", "vocab", f"{doc_id}.json")
                 if os.path.exists(vocab_path):
                     from backend.embedding import Vocabulary
-                    if self.embedding_service.vocab is None:
-                        self.embedding_service.vocab = Vocabulary()
-                    self.embedding_service.vocab.load(vocab_path)
+                    temp_vocab=Vocabulary()
+                    temp_vocab.load(vocab_path)
+
+                    # 创建临时 embedding service（浅拷贝避免污染）
+                    temp_embedding = copy.copy(self.embedding_service)
+                    temp_embedding.vocab = temp_vocab
+
+                    two_stage=TwoStageRecallService(
+                        embedding_service=temp_embedding,
+                        milvus_manager=milvus_client,
+                        reranker=self.reranker,
+                        rewrite_service=RewriteService(self.llm_service),
+                        grading_service=GradingService(self.llm_service),
+                        pg_client=self.pg_client,
+                        vocab=temp_vocab,
+                    )
                 else:
                     continue
 
-                # 动态创建 TwoStageRecallService（因为每个 collection 的 MilvusManager 不同）
-                two_stage = TwoStageRecallService(
-                    embedding_service=self.embedding_service,
-                    milvus_manager=milvus_client,
-                    reranker=self.reranker,
-                    rewrite_service=RewriteService(self.llm_service),
-                    grading_service=GradingService(self.llm_service),
-                    pg_client=self.pg_client,
-                )
-                
+               
                 # 执行检索
                 result = two_stage.two_stage_retrieve(
                     query, strategy=strategy, top_k=top_k

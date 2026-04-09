@@ -48,7 +48,8 @@ class Services:
         
         self.reranker = RerankerService(provider=config.RERANK_PROVIDER,
             api_key=config.RERANK_API_KEY,
-            model_name=config.RERANKER_MODEL)
+            model_name=config.RERANKER_MODEL,
+            model_path=config.RERANK_MODEL_PATH)
         
         # 为 Agent 创建一个跨文档检索的 RAG 工具
         self.rag_tool = CrossDocRAGRetrieveTool(

@@ -26,6 +26,7 @@ class Config:
         self.RERANK_API_KEY = os.getenv("RERANK_API_KEY", "")
         self.RERANK_API_BASE = os.getenv("RERANK_API_BASE", "")
         self.RERANKER_MODEL = os.getenv("RERANKER_MODEL", "bge-reranker-base")
+        self.RERANK_MODEL_PATH = os.getenv("RERANK_MODEL_PATH", "models/bge-reranker-base")  # 新增
         
         # Milvus 配置
         self.MILVUS_HOST = os.getenv("MILVUS_HOST", "localhost")

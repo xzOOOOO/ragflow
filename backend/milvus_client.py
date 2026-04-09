@@ -124,97 +124,116 @@ class MilvusManager:
         return extracted
 
     def auto_merge(
-    self,
-    results: List[Dict],
-    pg_client: PostgresClient,
-    merge_to_l2: bool = True,
-    merge_to_l1: bool = True,) -> List[Dict]:
+        self,
+        results: List[Dict],
+        pg_client: PostgresClient,
+        merge_to_l2: bool = True,
+        merge_to_l1: bool = True) -> List[Dict]:
         """
         AutoMerge: L3 碎片合并 + 扩展到 L2/L1 上下文
-        
+
+        规则：
+        - 同一个 L2 下有 >=2 个 L3 → 合并成 L2
+        - 同一个 L1 下有 >=2 个 L2 → 合并成 L1
+
         流程：
         1. 按 parent_id 分组
-        2. 同组内按 child_index 排序
-        3. 连续的碎片合并成一段
-        4. 根据 parent_id 查找 L2 内容
-        5. 根据 grandparent_id 查找 L1 内容
+        2. 判断是否满足合并条件
+        3. 根据 parent_id 查找 L2 内容
+        4. 根据 grandparent_id 查找 L1 内容
         """
         if not results:
             return []
-        
-        # 第一步：按 (parent_id, child_index) 排序
-        sorted_results = sorted(results, key=lambda x: (x['parent_id'], x['child_index']))
-        
-        # 第二步：分组 + 连续合并
-        merged_groups = []
-        current_group = None
-        
-        for hit in sorted_results:
-            if current_group is None:
-                # 开始新组
-                current_group = {
-                    'parent_id': hit['parent_id'],
-                    'grandparent_id': hit['grandparent_id'],
-                    'child_indices': [hit['child_index']],
-                    'l3_contents': [hit['content']],
-                    'scores': [hit['score']],
-                }
-            else:
-                # 判断是否可以合并到当前组
-                is_same_parent = hit['parent_id'] == current_group['parent_id']
-                is_consecutive = hit['child_index'] == current_group['child_indices'][-1] + 1
-                
-                if is_same_parent and is_consecutive:
-                    # 连续 → 合并到当前组
-                    current_group['child_indices'].append(hit['child_index'])
-                    current_group['l3_contents'].append(hit['content'])
-                    current_group['scores'].append(hit['score'])
-                else:
-                    # 不连续 → 保存当前组，开始新组
-                    merged_groups.append(current_group)
-                    current_group = {
-                        'parent_id': hit['parent_id'],
-                        'grandparent_id': hit['grandparent_id'],
-                        'child_indices': [hit['child_index']],
-                        'l3_contents': [hit['content']],
-                        'scores': [hit['score']],
-                    }
-        
-        # 别忘记最后一个组
-        if current_group:
-            merged_groups.append(current_group)
-        
-        # 第三步：扩展到 L2/L1 上下文
-        final_results = []
-        for group in merged_groups:
-            parent_id = group['parent_id']
-            grandparent_id = group['grandparent_id']
-            
-            l2_content = ""
-            l1_content = ""
-            
-            # 查 L2 内容
-            if merge_to_l2 and parent_id:
-                l2_data = pg_client.get_chunk_by_id(parent_id)
-                if l2_data:
-                    l2_content = l2_data["content"]
-            
-            # 查 L1 内容
-            if merge_to_l1 and grandparent_id:
-                l1_data = pg_client.get_chunk_by_id(grandparent_id)
-                if l1_data:
-                    l1_content = l1_data["content"]
-            
-            final_results.append({
-                'merged_l3_content': '\n\n'.join(group['l3_contents']),  # 合并后的碎片
-                'l2_content': l2_content,                                 # L2 父块
-                'l1_content': l1_content,                                 # L1 祖父块
-                'child_count': len(group['l3_contents']),
-                'child_indices': group['child_indices'],
-                'score': sum(group['scores']) / len(group['scores']),      # 平均分
+
+        from collections import defaultdict
+
+        l3_groups = defaultdict(list)
+        for hit in results:
+            l3_groups[hit['parent_id']].append(hit)
+
+        merged_l3_to_l2 = []
+        for parent_id, hits in l3_groups.items():
+            merged_l3_to_l2.append({
+                'parent_id': parent_id,
+                'grandparent_id': hits[0]['grandparent_id'],
+                'l3_contents': [h['content'] for h in hits],
+                'scores': [h['score'] for h in hits],
+                'child_count': len(hits),
             })
-        
-        # 按分数排序返回
+
+        if merge_to_l1:
+            l2_groups = defaultdict(list)
+            for group in merged_l3_to_l2:
+                l2_groups[group['grandparent_id']].append(group)
+
+            final_groups = []
+            for grandparent_id, groups in l2_groups.items():
+                if len(groups) >= 2:
+                    all_l3 = []
+                    all_scores = []
+                    for g in groups:
+                        all_l3.extend(g['l3_contents'])
+                        all_scores.extend(g['scores'])
+                    final_groups.append({
+                        'grandparent_id': grandparent_id,
+                        'merged_l3_content': '\n\n'.join(all_l3),
+                        'merged_l2_contents': [pg_client.get_chunk_by_id(g['parent_id'])['content'] for g in groups if pg_client.get_chunk_by_id(g['parent_id'])],
+                        'child_count': sum(g['child_count'] for g in groups),
+                        'score': sum(all_scores) / len(all_scores),
+                    })
+                else:
+                    for g in groups:
+                        l2_content = pg_client.get_chunk_by_id(g['parent_id'])['content'] if pg_client.get_chunk_by_id(g['parent_id']) else ""
+                        final_groups.append({
+                            'grandparent_id': g['grandparent_id'],
+                            'merged_l3_content': '\n\n'.join(g['l3_contents']),
+                            'l2_content': l2_content,
+                            'l1_content': "",
+                            'child_count': g['child_count'],
+                            'score': sum(g['scores']) / len(g['scores']),
+                        })
+
+            final_results = []
+            for group in final_groups:
+                l1_content = ""
+                if merge_to_l1 and group['grandparent_id']:
+                    l1_data = pg_client.get_chunk_by_id(group['grandparent_id'])
+                    if l1_data:
+                        l1_content = l1_data["content"]
+
+                if 'merged_l2_contents' in group:
+                    final_results.append({
+                        'merged_l3_content': group['merged_l3_content'],
+                        'l2_content': '\n\n'.join(group['merged_l2_contents']),
+                        'l1_content': l1_content,
+                        'child_count': group['child_count'],
+                        'score': group['score'],
+                    })
+                else:
+                    final_results.append({
+                        'merged_l3_content': group['merged_l3_content'],
+                        'l2_content': group.get('l2_content', ''),
+                        'l1_content': l1_content,
+                        'child_count': group['child_count'],
+                        'score': group['score'],
+                    })
+        else:
+            final_results = []
+            for group in merged_l3_to_l2:
+                l2_content = ""
+                if merge_to_l2 and group['parent_id']:
+                    l2_data = pg_client.get_chunk_by_id(group['parent_id'])
+                    if l2_data:
+                        l2_content = l2_data["content"]
+
+                final_results.append({
+                    'merged_l3_content': '\n\n'.join(group['l3_contents']),
+                    'l2_content': l2_content,
+                    'l1_content': "",
+                    'child_count': group['child_count'],
+                    'score': sum(group['scores']) / len(group['scores']),
+                })
+
         return sorted(final_results, key=lambda x: x['score'], reverse=True)
 
 

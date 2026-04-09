@@ -4,7 +4,7 @@ from langchain_core.prompts import PromptTemplate
 from langchain_core.output_parsers import StrOutputParser, JsonOutputParser
 
 from backend.db import PostgresClient
-from .embedding import EmbeddingService
+from .embedding import EmbeddingService, Vocabulary
 from .rerank import RerankerService
 from .milvus_client import MilvusManager
 
@@ -155,6 +155,7 @@ class TwoStageRecallService:
         rewrite_service: RewriteService,
         grading_service: GradingService,
         pg_client: PostgresClient,
+        vocab:Vocabulary=None
     ):
         self.embedding = embedding_service
         self.milvus = milvus_manager
@@ -162,6 +163,7 @@ class TwoStageRecallService:
         self.rewrite = rewrite_service
         self.grading = grading_service
         self.pg_client = pg_client
+        self.vocab = vocab
     
     def two_stage_retrieve(
         self,
@@ -179,7 +181,7 @@ class TwoStageRecallService:
         4. 合并结果
         """
         # ===== 初次检索 =====
-        query_dense, query_sparse = self.embedding.embed_query(query)
+        query_dense, query_sparse = self.embedding.embed_query(query, vocab=self.vocab)
         l3_results = self.milvus.hybrid_retrieve(query_dense, query_sparse, top_k=top_k * 2)
         
         if self.reranker:

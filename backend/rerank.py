@@ -10,7 +10,7 @@ class RerankerService:
         model_path: str = None,
         provider: str = "local",
         api_key: str = None,
-        model_name: str = "qwen3-rerank"
+        model_name: str = None
     ):
         self.provider = provider
 

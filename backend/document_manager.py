@@ -10,6 +10,7 @@ from backend.document_process import DocumentService, Chunk
 from backend.embedding import EmbeddingService
 from backend.db import PostgresClient
 from backend.milvus_client import MilvusManager
+from backend.embedding import Vocabulary
 class DocumentManager:
     """文档管理器 - 处理文档的上传、删除、列表"""
 
@@ -23,7 +24,7 @@ class DocumentManager:
         self.pg_client = pg_client
         self.milvus_uri = milvus_uri
         self.doc_service = DocumentService()
-        
+        self._vocabs: Dict[str, Vocabulary] = {}
         self._milvus_clients: Dict[str, "MilvusClientWrapper"] = {}
 
     def _get_milvus_client(self, collection_name: str) -> "MilvusClientWrapper":
@@ -56,17 +57,17 @@ class DocumentManager:
         # 1. 保存临时文件
         suffix = os.path.splitext(filename)[1]
         with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+            tmp_path = tmp.name
             content = await file.read()
             tmp.write(content)
-            tmp_path = tmp.name
 
         try:
-            # 2. 生成文档 ID（基于文件名生成稳定的 ID，同名文件会覆盖旧数据）
+            # 2. 生成文档 ID（使用原始文件名，同名文件会覆盖旧数据）
             if filename:
-                import hashlib
-                safe_filename = "".join(c if c.isalnum() else "_" for c in os.path.splitext(filename)[0])[:30]
-                name_hash = hashlib.md5(filename.encode()).hexdigest()[:8]
-                doc_id = f"doc_{safe_filename}_{name_hash}"
+                base_name = os.path.splitext(filename)[0]
+                safe_name = "".join(c if c.isalnum() or c in ('_', '-') else '_' for c in base_name)
+                safe_name = safe_name[:50]
+                doc_id = f"doc_{safe_name}"
             else:
                 doc_id = f"doc_{datetime.now().strftime('%Y%m%d%H%M%S')}_{uuid.uuid4().hex[:8]}"
             collection_name = f"rag_{doc_id}"
@@ -92,8 +93,10 @@ class DocumentManager:
             dense_vectors = self.embedding_service.embed_dense(l3_contents)
             
             # 构建词汇表并计算 BM25（只使用当前文档的词）
-            self.embedding_service.build_vocab(l3_contents)
-            sparse_vectors = self.embedding_service.compute_bm25_sparse_vector(l3_contents)
+            temp_vocab = Vocabulary()
+            temp_vocab.build(l3_contents)
+            self._vocabs[doc_id] = temp_vocab
+            sparse_vectors = self.embedding_service.compute_bm25_sparse_vector(l3_contents,temp_vocab)
             
             # 6. 创建 Collection 并存入 Milvus
             milvus_client = self._get_milvus_client(collection_name)
@@ -133,7 +136,7 @@ class DocumentManager:
             vocab_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "vocab")
             os.makedirs(vocab_dir, exist_ok=True)
             vocab_path = os.path.join(vocab_dir, f"{doc_id}.json")
-            self.embedding_service.vocab.save(vocab_path)
+            self._vocabs[doc_id].save(vocab_path)
             
             return {
                 "doc_id": doc_id,
@@ -171,6 +174,15 @@ class DocumentManager:
         if collection_name in self._milvus_clients:
             del self._milvus_clients[collection_name]
         
+        # 删除 _vocabs 缓存
+        if doc_id in self._vocabs:
+            del self._vocabs[doc_id]
+        
+        # 删除词表文件
+        vocab_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "vocab", f"{doc_id}.json")
+        if os.path.exists(vocab_path):
+            os.unlink(vocab_path)
+
         # 2. 删除 PostgreSQL 数据（通过 doc_id）
         self.pg_client.delete_chunks_by_doc_id(doc_id)
         

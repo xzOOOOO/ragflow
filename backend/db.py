@@ -36,7 +36,7 @@ class PostgresClient:
             # 从环境变量构建
             host = os.getenv("PG_HOST", "localhost")
             port = os.getenv("PG_PORT", "5432")
-            dbname = os.getenv("PG_NAME", "ragdb")
+            dbname = os.getenv("PG_NAME", "ragflow")
             user = os.getenv("PG_USER", "postgres")
             password = os.getenv("PG_PASSWORD", "")
             database_url = f"postgresql://{user}:{password}@{host}:{port}/{dbname}"
